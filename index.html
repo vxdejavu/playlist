@@ -1238,7 +1238,6 @@ canvas#bgc{position:fixed;inset:0;pointer-events:none;z-index:0}
 </div><!-- /rev-inner -->
 </section>
 
-<audio id="main-audio" preload="metadata"></audio>
 
 <script>
 const RAW='https://raw.githubusercontent.com/vxdejavu/playlist/106ceed0c4137486781d7c8ee3fbe83dab10a682/%28IM%29MEMORIALIS/';
@@ -1272,11 +1271,13 @@ const PICK_QS=[
   {q:'Which sigil finds you?',hint:'Not chosen — recognized.'}
 ];
 
-// State
+// ── SINGLE SHARED AUDIO ──
+// One Audio object for everything. mainPlaying tracks whether the
+// fate-card player initiated it; plIdx tracks the playlist index.
 let picks=[],step=0,fateIdx=1;
-let mainPlaying=false;
-const mainAudio=document.getElementById('main-audio');
-let plAudio=null,plIdx=-1,plPlaying=false;
+const AUD=new Audio();
+let curIdx=-1;   // which track is loaded (-1 = none)
+let playing=false;
 
 // Stars
 (function(){
@@ -1318,7 +1319,7 @@ function showScreen(id){
 // Picks
 function goToPicks(){
   picks=[];step=0;
-  mainAudio.pause();mainPlaying=false;
+  AUD.pause();playing=false;curIdx=-1;
   updateMainIco(false);
   document.getElementById('main-dot').classList.add('paused');
   showScreen('picks');renderStep();
@@ -1373,32 +1374,44 @@ function showReveal(){
   h+=`<div class="cred-row"><span class="ck">Produced ·</span><span class="cv">${t.credits.produced.join(', ')}</span></div>`;
   document.getElementById('creds-inner').innerHTML=h;
 
-  mainAudio.src=t.file;mainAudio.load();
-  mainAudio.onloadedmetadata=()=>document.getElementById('main-dur').textContent=fmt(mainAudio.duration);
-  mainAudio.ontimeupdate=updateMainProg;
-  mainAudio.onended=()=>{mainPlaying=false;updateMainIco(false);document.getElementById('main-dot').classList.add('paused')};
-  mainAudio.oncanplay=()=>mainAudio.play().then(()=>{mainPlaying=true;updateMainIco(true);document.getElementById('main-dot').classList.remove('paused')}).catch(()=>{});
+  loadAndPlay(fateIdx, true);
 }
 
 function toggleMain(){
-  if(mainPlaying){mainAudio.pause();mainPlaying=false;updateMainIco(false);document.getElementById('main-dot').classList.add('paused')}
-  else{mainAudio.play().then(()=>{mainPlaying=true;updateMainIco(true);document.getElementById('main-dot').classList.remove('paused')}).catch(()=>{})}
+  if(playing){AUD.pause();playing=false;updateMainIco(false);updateMiniIco(curIdx,false);updateNPStrip(curIdx,false);document.getElementById('main-dot').classList.add('paused')}
+  else{AUD.play().then(()=>{playing=true;updateMainIco(curIdx===fateIdx);updateMiniIco(curIdx,true);updateNPStrip(curIdx,true);document.getElementById('main-dot').classList.toggle('paused',curIdx!==fateIdx)}).catch(()=>{})}
 }
 function updateMainIco(p){
   document.getElementById('main-pico').innerHTML=p
     ?'<rect x="3" y="2" width="4" height="12" rx="1"/><rect x="9" y="2" width="4" height="12" rx="1"/>'
     :'<polygon points="3,1 13,8 3,15"/>';
 }
-function updateMainProg(){
-  if(!mainAudio.duration)return;
-  const p=mainAudio.currentTime/mainAudio.duration*100;
-  document.getElementById('main-fill').style.width=p+'%';
-  document.getElementById('main-cur').textContent=fmt(mainAudio.currentTime);
+// unified progress — called from AUD.ontimeupdate
+function updateAllProgress(){
+  if(!AUD.duration)return;
+  const p=AUD.currentTime/AUD.duration*100;
+  const t=fmt(AUD.currentTime);
+  // fate card player
+  if(curIdx===fateIdx){
+    document.getElementById('main-fill').style.width=p+'%';
+    document.getElementById('main-cur').textContent=t;
+  }
+  // playlist mini bar
+  const mf=document.getElementById('mf-'+curIdx);
+  const mt=document.getElementById('mt-'+curIdx);
+  if(mf)mf.style.width=p+'%';
+  if(mt)mt.textContent=t;
+  // now-playing strip
+  const npf=document.getElementById('pl-np-fill');
+  const npt=document.getElementById('pl-np-time');
+  if(npf)npf.style.width=p+'%';
+  if(npt)npt.textContent=t;
 }
+function updateMainProg(){updateAllProgress();}
 function seekMain(e){
-  if(!mainAudio.duration)return;
+  if(!AUD.duration)return;
   const r=e.currentTarget.getBoundingClientRect();
-  mainAudio.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*mainAudio.duration;
+  AUD.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*AUD.duration;
 }
 function fmt(s){
   if(!s||isNaN(s))return'0:00';
@@ -1412,7 +1425,18 @@ function unlock(){
     document.getElementById('grim-lock').style.display='none';
     document.getElementById('grim-open').style.display='block';
     buildPlaylist();
-    setTimeout(()=>playTrack(fateIdx),500);
+    // If fate track already playing via main player, just sync the UI
+    // Otherwise start it
+    if(curIdx===fateIdx&&playing){
+      setTimeout(()=>{
+        updateMiniIco(fateIdx,true);
+        updateNPStrip(fateIdx,true);
+        document.getElementById('pl-np').classList.add('show');
+        document.getElementById('pl-np-name').textContent=TRACKS[fateIdx].title;
+      },100);
+    } else {
+      setTimeout(()=>playTrack(fateIdx),500);
+    }
   } else {
     const err=document.getElementById('riddle-err');
     err.classList.add('show');
@@ -1484,79 +1508,77 @@ function updateNPStrip(i,playing){
 }
 
 function toggleMiniTop(){
-  if(plIdx<0)return;
-  const audio=getPlAudio();
-  if(plPlaying){audio.pause();plPlaying=false;updateMiniIco(plIdx,false);updateNPStrip(plIdx,false)}
-  else{audio.play().then(()=>{plPlaying=true;updateMiniIco(plIdx,true);updateNPStrip(plIdx,true)}).catch(()=>{})}
+  if(curIdx<0)return;
+  if(playing){AUD.pause();playing=false;updateMiniIco(curIdx,false);updateNPStrip(curIdx,false);if(curIdx===fateIdx){updateMainIco(false);document.getElementById('main-dot').classList.add('paused');}}
+  else{AUD.play().then(()=>{playing=true;updateMiniIco(curIdx,true);updateNPStrip(curIdx,true);if(curIdx===fateIdx){updateMainIco(true);document.getElementById('main-dot').classList.remove('paused');}}).catch(()=>{});}
 }
 
 function seekNP(e){
-  const audio=getPlAudio();
-  if(plIdx<0||!audio.duration)return;
+  if(curIdx<0||!AUD.duration)return;
   const r=e.currentTarget.getBoundingClientRect();
-  audio.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*audio.duration;
+  AUD.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*AUD.duration;
 }
 
-function getPlAudio(){
-  if(!plAudio){
-    plAudio=new Audio();
-    plAudio.ontimeupdate=()=>{
-      if(!plAudio.duration)return;
-      const p=plAudio.currentTime/plAudio.duration*100;
-      const f=document.getElementById(`mf-${plIdx}`);
-      const mt=document.getElementById(`mt-${plIdx}`);
-      const npf=document.getElementById('pl-np-fill');
-      const npt=document.getElementById('pl-np-time');
-      if(f)f.style.width=p+'%';
-      if(mt)mt.textContent=fmt(plAudio.currentTime);
-      if(npf)npf.style.width=p+'%';
-      if(npt)npt.textContent=fmt(plAudio.currentTime);
-    };
-    plAudio.onended=()=>{
-      plPlaying=false;
-      updateMiniIco(plIdx,false);
-      updateNPStrip(plIdx,false);
-    };
+// loadAndPlay: loads track i into AUD and starts playback
+// fromFate=true means the fate card player triggered it
+function loadAndPlay(i, fromFate){
+  AUD.pause();
+  // Reset old track's UI
+  if(curIdx>=0){
+    updateMiniIco(curIdx,false);
+    if(curIdx===fateIdx){updateMainIco(false);document.getElementById('main-dot').classList.add('paused');}
   }
-  return plAudio;
+  curIdx=i;playing=false;
+  AUD.src=TRACKS[i].file;
+  AUD.load();
+  AUD.onloadedmetadata=()=>{
+    const dur=fmt(AUD.duration);
+    if(i===fateIdx) document.getElementById('main-dur').textContent=dur;
+  };
+  AUD.ontimeupdate=updateAllProgress;
+  AUD.onended=()=>{
+    playing=false;
+    updateMiniIco(curIdx,false);
+    updateNPStrip(curIdx,false);
+    if(curIdx===fateIdx){updateMainIco(false);document.getElementById('main-dot').classList.add('paused');}
+  };
+  AUD.oncanplay=()=>{
+    AUD.play().then(()=>{
+      playing=true;
+      const isFate=curIdx===fateIdx;
+      updateMainIco(isFate);
+      document.getElementById('main-dot').classList.toggle('paused',!isFate);
+      updateMiniIco(curIdx,true);
+      updateNPStrip(curIdx,true);
+      document.getElementById('pl-np').classList.add('show');
+      document.getElementById('pl-np-name').textContent=TRACKS[curIdx].title;
+    }).catch(()=>{});
+  };
 }
+function getPlAudio(){return AUD;}
 
 function playTrack(i){
+  // Update row highlights
   document.querySelectorAll('.tk').forEach((r,j)=>{
     const isFate=j===fateIdx;
     r.className='tk'+(isFate?' fate-track':'')+(j===i?' active':'');
     const body=r.querySelector('.tk-body');
     const fl=body.querySelector('.tk-flavor');
     if(j===i){if(!fl){const d=document.createElement('div');d.className='tk-flavor';d.innerHTML='"'+TRACKS[j].flavor+'"';body.appendChild(d)}}
-    else{if(fl)fl.remove()}
+    else{if(fl&&!isFate)fl.remove()}
   });
   document.querySelectorAll('.tk-mini').forEach((m,j)=>m.classList.toggle('show',j===i));
 
-  const audio=getPlAudio();
-  if(plIdx!==i){
-    audio.pause();updateMiniIco(plIdx,false);
-    plIdx=i;
-    audio.src=TRACKS[i].file;audio.load();
-    audio.oncanplay=()=>{
-      audio.play().then(()=>{
-        plPlaying=true;
-        updateMiniIco(i,true);
-        updateNPStrip(i,true);
-        document.getElementById('pl-np').classList.add('show');
-        document.getElementById('pl-np-name').textContent=TRACKS[i].title;
-      }).catch(()=>{});
-    };
-  } else if(!plPlaying){
-    audio.play().then(()=>{plPlaying=true;updateMiniIco(i,true);updateNPStrip(i,true)}).catch(()=>{});
+  if(curIdx===i){
+    // Same track — toggle play/pause
+    if(playing){AUD.pause();playing=false;updateMiniIco(i,false);updateNPStrip(i,false);if(i===fateIdx){updateMainIco(false);document.getElementById('main-dot').classList.add('paused');}}
+    else{AUD.play().then(()=>{playing=true;updateMiniIco(i,true);updateNPStrip(i,true);if(i===fateIdx){updateMainIco(true);document.getElementById('main-dot').classList.remove('paused');}}).catch(()=>{});}
+  } else {
+    loadAndPlay(i,false);
   }
 }
 
-function toggleMini(i){
-  const audio=getPlAudio();
-  if(plIdx===i&&plPlaying){audio.pause();plPlaying=false;updateMiniIco(i,false);updateNPStrip(i,false)}
-  else if(plIdx===i&&!plPlaying){audio.play().then(()=>{plPlaying=true;updateMiniIco(i,true);updateNPStrip(i,true)}).catch(()=>{})}
-  else{playTrack(i)}
-}
+function toggleMini(i){playTrack(i);}
 
 function updateMiniIco(i,p){
   const ico=document.getElementById(`mi-${i}`);
@@ -1567,10 +1589,9 @@ function updateMiniIco(i,p){
 }
 
 function seekMini(e,i){
-  const audio=getPlAudio();
-  if(plIdx!==i||!audio.duration)return;
+  if(curIdx!==i||!AUD.duration)return;
   const r=e.currentTarget.getBoundingClientRect();
-  audio.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*audio.duration;
+  AUD.currentTime=Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*AUD.duration;
 }
 </script>
 </body>
