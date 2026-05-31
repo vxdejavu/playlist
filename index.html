@@ -1564,8 +1564,8 @@ function playTrack(i){
     r.className='tk'+(isFate?' fate-track':'')+(j===i?' active':'');
     const body=r.querySelector('.tk-body');
     const fl=body.querySelector('.tk-flavor');
-    if(j===i){if(!fl){const d=document.createElement('div');d.className='tk-flavor';d.innerHTML='"'+TRACKS[j].flavor+'"';body.appendChild(d)}}
-    else{if(fl&&!isFate)fl.remove()}
+    if(j===i&&j===fateIdx){if(!fl){const d=document.createElement('div');d.className='tk-flavor';d.innerHTML='"'+TRACKS[j].flavor+'"';body.appendChild(d)}}
+    else{if(fl&&j!==fateIdx)fl.remove()}
   });
   document.querySelectorAll('.tk-mini').forEach((m,j)=>m.classList.toggle('show',j===i));
 
